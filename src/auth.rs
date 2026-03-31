@@ -442,8 +442,6 @@ pub async fn run_oauth_setup(
     println!("\nSetup complete!");
     println!("  Config:  {}", config_path.display());
     println!("  Secrets: {} (owned by {service_user})", secrets_path.display());
-    println!("  Skill:   {}", if skill_installed { "installed" } else { "skipped" });
-    println!("  Webhook: {}", if webhook_configured { "configured" } else { "skipped" });
     println!("\nNext steps:");
     println!("  1. Verify your config.toml settings (Gmail account, Pub/Sub topic, etc.)");
     println!("  2. Create the '{}' label in Gmail if it doesn't exist", "agent-blocked");

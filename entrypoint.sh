@@ -3,6 +3,18 @@ set -e
 
 SERVICE_USER="_gmail_proxy"
 
+# Check and copy secrets.toml if present
+if [ -f /app/secrets.toml ]; then
+    echo "Found /app/secrets.toml, copying to /etc/gmail-proxy/"
+    cp /app/secrets.toml /etc/gmail-proxy/
+fi
+
+# Check and copy client_secret.json if present
+if [ -f /app/client_secret.json ]; then
+    echo "Found /app/client_secret.json, copying to /etc/gmail-proxy/"
+    cp /app/client_secret.json /etc/gmail-proxy/
+fi
+
 # 1. Install service if not already installed
 if ! id "$SERVICE_USER" &>/dev/null; then
     echo "Creating service user $SERVICE_USER"

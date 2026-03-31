@@ -436,31 +436,7 @@ pub async fn run_oauth_setup(
     }
 
     // Step 11: Configure OpenClaw webhook
-    let openclaw_json_path = openclaw_config.unwrap_or_else(|| {
-        openclaw_home.join(".openclaw/openclaw.json")
-    });
-
-    let webhook_configured;
-    if openclaw_json_path.exists() {
-        // Prompt user
-        use std::io::Write;
-        print!("\nConfigure OpenClaw webhook for gmail-proxy? [Y/n] ");
-        std::io::stdout().flush()?;
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        let input = input.trim();
-
-        if input.is_empty() || input.eq_ignore_ascii_case("y") || input.eq_ignore_ascii_case("yes") {
-            configure_openclaw_webhook(&openclaw_json_path, &hook_token)?;
-            println!("Configured webhook mapping 'gmail-proxy' in {}", openclaw_json_path.display());
-            webhook_configured = true;
-        } else {
-            webhook_configured = false;
-        }
-    } else {
-        println!("openclaw.json not found at {}, skipping webhook configuration", openclaw_json_path.display());
-        webhook_configured = false;
-    }
+    // needs to be done manually on openclaw host
 
     // Step 12: Print summary
     println!("\nSetup complete!");
@@ -493,84 +469,7 @@ fn urlencoding(s: &str) -> String {
 }
 
 /// Look up a user's home directory by username.
-fn get_user_home(username: &str) -> Result<PathBuf> {
-    #[cfg(unix)]
-    {
-        use nix::unistd::User;
-        if let Some(user) = User::from_name(username)
-            .context("failed to look up user")?
-        {
-            return Ok(user.dir);
-        }
-    }
-    anyhow::bail!("Could not find home directory for user '{username}'")
-}
+// not needed in containerized environments 
 
 /// Configure the gmail-proxy webhook mapping in openclaw.json.
-fn configure_openclaw_webhook(path: &Path, hook_token: &str) -> Result<()> {
-    // Read existing config
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
-
-    // Parse as JSON5 -> serde_json::Value
-    let mut config: serde_json::Value = json5::from_str(&content)
-        .with_context(|| format!("failed to parse {}", path.display()))?;
-
-    // Ensure hooks section exists
-    let hooks = config.as_object_mut()
-        .context("openclaw.json root is not an object")?
-        .entry("hooks")
-        .or_insert(serde_json::json!({}));
-
-    let hooks_obj = hooks.as_object_mut()
-        .context("hooks is not an object")?;
-
-    // Set enabled = true
-    hooks_obj.insert("enabled".into(), serde_json::json!(true));
-
-    // Set token if not already set
-    if !hooks_obj.contains_key("token") {
-        hooks_obj.insert("token".into(), serde_json::json!(hook_token));
-    }
-
-    // Ensure mappings array exists
-    let mappings = hooks_obj
-        .entry("mappings")
-        .or_insert(serde_json::json!([]));
-
-    let mappings_arr = mappings.as_array_mut()
-        .context("hooks.mappings is not an array")?;
-
-    // Check if gmail-proxy mapping already exists
-    let existing_idx = mappings_arr.iter().position(|m| {
-        m.get("id").and_then(|v| v.as_str()) == Some("gmail-proxy")
-    });
-
-    let mapping = serde_json::json!({
-        "id": "gmail-proxy",
-        "match": { "path": "gmail-proxy" },
-        "action": "agent",
-        "wakeMode": "now",
-        "name": "Gmail Proxy",
-        "sessionKey": "hook:gmail-proxy:{{messages[0].id}}",
-        "messageTemplate": "New email from {{messages[0].from}}\nSubject: {{messages[0].subject}}\n\n{{messages[0].body_text}}",
-        "deliver": true,
-        "channel": "last"
-    });
-
-    if let Some(idx) = existing_idx {
-        println!("  Updating existing gmail-proxy webhook mapping");
-        mappings_arr[idx] = mapping;
-    } else {
-        println!("  Adding gmail-proxy webhook mapping");
-        mappings_arr.push(mapping);
-    }
-
-    // Write back as pretty JSON (valid JSON5)
-    let output = serde_json::to_string_pretty(&config)
-        .context("failed to serialize openclaw.json")?;
-    std::fs::write(path, &output)
-        .with_context(|| format!("failed to write {}", path.display()))?;
-
-    Ok(())
-}
+// needs to be done manuall on openclaw host 

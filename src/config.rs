@@ -30,7 +30,7 @@ pub struct ScrubConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ProxyConfig {
-    pub socket_path: String,
+    pub bind: String,
     pub search_fetch_concurrency: usize,
 }
 

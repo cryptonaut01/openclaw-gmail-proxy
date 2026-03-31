@@ -252,36 +252,14 @@ async fn serve(config_path: Option<PathBuf>) -> anyhow::Result<()> {
     });
 
     let app = build_router(state);
-
-    let socket_path = std::path::Path::new(&config.proxy.socket_path);
-    if let Some(parent) = socket_path.parent() {
-        std::fs::create_dir_all(parent)
-            .context(format!("Failed to create socket directory {}", parent.display()))?;
-    }
-    // Remove stale socket file from previous run
-    if socket_path.exists() {
-        std::fs::remove_file(socket_path)
-            .context("Failed to remove stale socket file")?;
-    }
-
-    let listener = tokio::net::UnixListener::bind(socket_path)
-        .context(format!("Failed to bind Unix socket at {}", socket_path.display()))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(
-            socket_path,
-            std::fs::Permissions::from_mode(0o660),
-        ).context("Failed to set socket permissions to 0660")?;
-        tracing::info!("Socket permissions set to 0660");
-    }
-
-    tracing::info!("Proxy API listening on {}", socket_path.display());
+    let listener = tokio::net::TcpListener::bind(&config.proxy.bind)
+        .await
+        .context(format!("Failed to bind to {}", config.proxy.bind))?;
+    tracing::info!("Proxy API listening on {}", config.proxy.bind);
+   
 
     // 15. Run everything concurrently with graceful shutdown
-    let server = axum::serve(listener, app.into_make_service())
-        .with_graceful_shutdown(shutdown_signal());
+    let server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
 
     tokio::select! {
         result = server => {

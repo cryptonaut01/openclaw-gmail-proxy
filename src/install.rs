@@ -42,11 +42,11 @@ allowed_operators = [
 ]
 
 [proxy]
-socket_path = "/var/run/gmail-proxy/proxy.sock"
+bind = "0.0.0.0:8780"
 search_fetch_concurrency = 10
 
 [openclaw]
-hook_url = "http://127.0.0.1:18789/hooks/gmail-proxy"
+hook_url = "http://openclaw:18789/hooks/gmail-proxy"
 
 [audit]
 log_dir = "/var/log/gmail-proxy"
@@ -68,12 +68,12 @@ RestartSec=5
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/gmail-proxy /var/log/gmail-proxy /var/run/gmail-proxy
+ReadWritePaths=/var/lib/gmail-proxy /var/log/gmail-proxy
 PrivateTmp=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictAddressFamilies=AF_INET AF_INET6
 RestrictNamespaces=true
 LockPersonality=true
 MemoryDenyWriteExecute=true

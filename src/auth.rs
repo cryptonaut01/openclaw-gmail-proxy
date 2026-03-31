@@ -258,9 +258,9 @@ pub async fn run_oauth_setup(
     }
 
     // Step 2: Spin up ephemeral Axum listener
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let port = listener.local_addr()?.port();
-    let redirect_uri = format!("http://127.0.0.1:{port}");
+    let fixed_port = 33687;
+    let listener = tokio::net::TcpListener::bind(("0.0.0.0", fixed_port)).await?;
+    let redirect_uri = format!("http://127.0.0.1:{fixed_port}");
 
     // Channel to receive the authorization code
     let (tx, rx) = tokio::sync::oneshot::channel::<String>();
@@ -408,23 +408,31 @@ pub async fn run_oauth_setup(
         }
     }
 
-    // Step 10: Install OpenClaw skill
-    let openclaw_home = get_user_home(openclaw_user)?;
-    let workspace = openclaw_home.join(".openclaw/workspace");
-    let skill_installed;
-    if workspace.is_dir() {
-        let skill_dir = workspace.join("skills/gmail-proxy");
-        std::fs::create_dir_all(&skill_dir)
-            .with_context(|| format!("failed to create {}", skill_dir.display()))?;
-        let skill_path = skill_dir.join("SKILL.md");
-        std::fs::write(&skill_path, crate::SKILL_CONTENT)
-            .with_context(|| format!("failed to write {}", skill_path.display()))?;
-        println!("Installed skill to {}", skill_path.display());
-        skill_installed = true;
-    } else {
-        println!("OpenClaw workspace not found at {}, skipping skill install", workspace.display());
-        println!("  Install manually: gmail-proxy install-skill --workspace /path/to/workspace");
-        skill_installed = false;
+    // Step 10: Check if OpenClaw skill is installed, warn if not
+    let gateway_token = std::env::var("OPENCLAW_GATEWAY_TOKEN")
+    .unwrap_or_else(|_| "".to_string());
+    let client = reqwest::blocking::Client::new();
+    let res = client
+        .get("http://openclaw-host/api/skills")
+        .bearer_auth(gateway_token)
+        .send();
+
+    match res {
+        Ok(response) => {
+            if let Ok(skills) = response.json::<serde_json::Value>() {
+                let found = skills.as_array().map_or(false, |arr| arr.iter().any(|s| s.get("id") == Some(&serde_json::Value::String("gmail-proxy".to_string()))));
+                if found {
+                    println!("gmail-proxy skill is registered in OpenClaw.");
+                } else {
+                    println!("WARNING: gmail-proxy skill is NOT registered in OpenClaw. Please install SKILL.md manually using the openclaw CLI.");
+                }
+            } else {
+                println!("Could not parse skills list from OpenClaw API.");
+            }
+        }
+        Err(e) => {
+            println!("Could not reach OpenClaw API to check skills: {e}");
+        }
     }
 
     // Step 11: Configure OpenClaw webhook

@@ -1,7 +1,9 @@
 FROM rustlang/rust:nightly-slim AS builder
 WORKDIR /app
 RUN apt-get update && apt-get install -y git pkg-config libssl-dev libssl3 && rm -rf /var/lib/apt/lists/*
-RUN git clone --branch feature/tcp-for-remote --single-branch https://github.com/cryptonaut01/openclaw-gmail-proxy.git .
+RUN git clone --branch feature/tcp-for-remote --single-branch https://github.com/cryptonaut01/openclaw-gmail-proxy.git /app/gmail-proxy
+WORKDIR /app/gmail-proxy
+COPY Cargo.toml ./Cargo.toml
 RUN cargo build --release
 
 

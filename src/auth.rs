@@ -468,8 +468,8 @@ fn urlencoding(s: &str) -> String {
     result
 }
 
-/// Look up a user's home directory by username.
+// Look up a user's home directory by username.
 // not needed in containerized environments 
 
-/// Configure the gmail-proxy webhook mapping in openclaw.json.
+// Configure the gmail-proxy webhook mapping in openclaw.json.
 // needs to be done manuall on openclaw host 

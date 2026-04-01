@@ -172,6 +172,8 @@ pub async fn run_oauth_setup(
     openclaw_user: &str,
     openclaw_config: Option<PathBuf>,
 ) -> Result<()> {
+
+    // Check if secrets.toml already exists in /etc/gmail-proxy
     if !config_path.exists() {
         anyhow::bail!(
             "Config file not found at {}. Run 'gmail-proxy install' first.",
@@ -257,156 +259,165 @@ pub async fn run_oauth_setup(
         }
     }
 
-    // Step 2: Spin up ephemeral Axum listener
-    let fixed_port = 33687;
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", fixed_port)).await?;
-    let redirect_uri = format!("http://127.0.0.1:{fixed_port}");
 
-    // Channel to receive the authorization code
-    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
-    let tx = Arc::new(tokio::sync::Mutex::new(Some(tx)));
+    // After credentials are loaded/updated, check for secrets.toml
+    let secrets_path = Path::new("/etc/gmail-proxy/secrets.toml");
+    let skip_oauth = secrets_path.exists();
+    if skip_oauth {
+        println!("secrets.toml already exists at {}. Skipping OAuth registration steps.", secrets_path.display());
+    } else {
+        // Step 2: Spin up ephemeral Axum listener
+        let fixed_port = 33687;
+        let listener = tokio::net::TcpListener::bind(("0.0.0.0", fixed_port)).await?;
+        let redirect_uri = format!("http://127.0.0.1:{fixed_port}");
 
-    let callback_handler = {
-        let tx = tx.clone();
-        move |axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>| {
+        // Channel to receive the authorization code
+        let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+        let tx = Arc::new(tokio::sync::Mutex::new(Some(tx)));
+
+        let callback_handler = {
             let tx = tx.clone();
-            async move {
-                if let Some(code) = params.get("code") {
-                    if let Some(sender) = tx.lock().await.take() {
-                        let _ = sender.send(code.clone());
+            move |axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>| {
+                let tx = tx.clone();
+                async move {
+                    if let Some(code) = params.get("code") {
+                        if let Some(sender) = tx.lock().await.take() {
+                            let _ = sender.send(code.clone());
+                        }
+                        axum::response::Html(
+                            "<html><body><h1>Authorization successful!</h1>\
+                             <p>You can close this tab and return to the terminal.</p></body></html>"
+                                .to_string(),
+                        )
+                    } else {
+                        let error = params
+                            .get("error")
+                            .cloned()
+                            .unwrap_or_else(|| "unknown error".into());
+                        axum::response::Html(format!(
+                            "<html><body><h1>Authorization failed</h1><p>{error}</p></body></html>"
+                        ))
                     }
-                    axum::response::Html(
-                        "<html><body><h1>Authorization successful!</h1>\
-                         <p>You can close this tab and return to the terminal.</p></body></html>"
-                            .to_string(),
-                    )
-                } else {
-                    let error = params
-                        .get("error")
-                        .cloned()
-                        .unwrap_or_else(|| "unknown error".into());
-                    axum::response::Html(format!(
-                        "<html><body><h1>Authorization failed</h1><p>{error}</p></body></html>"
-                    ))
+                }
+            }
+        };
+
+        let app = axum::Router::new().route("/", axum::routing::get(callback_handler));
+
+        // Step 3: Build OAuth URL
+        let auth_url = format!(
+            "https://accounts.google.com/o/oauth2/v2/auth?\
+             client_id={}&\
+             redirect_uri={}&\
+             response_type=code&\
+             scope=https://www.googleapis.com/auth/gmail.readonly%20https://www.googleapis.com/auth/pubsub&\
+             access_type=offline&\
+             prompt=consent",
+            urlencoding(&client_id),
+            urlencoding(&redirect_uri),
+        );
+
+        println!("\nOpening browser for Google OAuth consent...");
+        println!("If the browser doesn't open, visit this URL manually:\n");
+        println!("  {auth_url}\n");
+
+        // Step 4: Open browser
+        if let Err(e) = open::that(&auth_url) {
+            eprintln!("Warning: could not open browser: {e}");
+        }
+
+        // Run the server until we get the code
+        let server = axum::serve(listener, app);
+        let code = tokio::select! {
+            result = server => {
+                result.context("callback server error")?;
+                anyhow::bail!("callback server exited unexpectedly");
+            }
+            code = rx => {
+                code.context("failed to receive authorization code")?
+            }
+        };
+
+        println!("Received authorization code. Exchanging for tokens...");
+
+        // Step 6: Exchange code for tokens
+        let http = reqwest::Client::new();
+        let token_body = format!(
+            "grant_type=authorization_code&code={}&client_id={}&client_secret={}&redirect_uri={}",
+            urlencoding(&code),
+            urlencoding(&client_id),
+            urlencoding(&client_secret),
+            urlencoding(&redirect_uri),
+        );
+
+        let resp = http
+            .post("https://oauth2.googleapis.com/token")
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(token_body)
+            .send()
+            .await
+            .context("failed to exchange authorization code")?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Token exchange failed with status {status}: {text}");
+        }
+
+        let token_resp: OAuthTokenResponse = resp.json().await.context("failed to parse token response")?;
+
+        let refresh_token = token_resp
+            .refresh_token
+            .context("No refresh_token in response. Try revoking access at https://myaccount.google.com/permissions and re-running setup.")?;
+
+        // Step 7: Generate random openclaw_hook_token
+        use rand::Rng;
+        let mut rng = rand::rng();
+        let hook_token_bytes: [u8; 32] = rng.random();
+        let hook_token: String = hook_token_bytes
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+
+        // Step 8: Write secrets.toml
+        let secrets_path_local = config_dir.join("secrets.toml");
+        let secrets_content = format!(
+            "refresh_token = \"{refresh_token}\"\nopenclaw_hook_token = \"{hook_token}\"\n"
+        );
+        std::fs::write(&secrets_path_local, &secrets_content)
+            .with_context(|| format!("failed to write {}", secrets_path_local.display()))?;
+
+        // Set permissions to 0600
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&secrets_path_local, std::fs::Permissions::from_mode(0o600))?;
+        }
+        println!("Wrote {}", secrets_path_local.display());
+
+        // Step 9: Chown secrets to service user
+        {
+            let chown_result = std::process::Command::new("sudo")
+                .args([
+                    "chown",
+                    &format!("{service_user}:{service_user}"),
+                    &secrets_path_local.display().to_string(),
+                ])
+                .status();
+
+            match chown_result {
+                Ok(s) if s.success() => {
+                    println!("Set ownership of secrets.toml to {service_user}");
+                }
+                _ => {
+                    eprintln!("Could not chown secrets.toml. Run manually:");
+                    eprintln!("  sudo chown {service_user}:{service_user} {}", secrets_path_local.display());
+                    eprintln!("  chmod 0600 {}", secrets_path_local.display());
                 }
             }
         }
-    };
-
-    let app = axum::Router::new().route("/", axum::routing::get(callback_handler));
-
-    // Step 3: Build OAuth URL
-    let auth_url = format!(
-        "https://accounts.google.com/o/oauth2/v2/auth?\
-         client_id={}&\
-         redirect_uri={}&\
-         response_type=code&\
-         scope=https://www.googleapis.com/auth/gmail.readonly%20https://www.googleapis.com/auth/pubsub&\
-         access_type=offline&\
-         prompt=consent",
-        urlencoding(&client_id),
-        urlencoding(&redirect_uri),
-    );
-
-    println!("\nOpening browser for Google OAuth consent...");
-    println!("If the browser doesn't open, visit this URL manually:\n");
-    println!("  {auth_url}\n");
-
-    // Step 4: Open browser
-    if let Err(e) = open::that(&auth_url) {
-        eprintln!("Warning: could not open browser: {e}");
     }
 
-    // Run the server until we get the code
-    let server = axum::serve(listener, app);
-    let code = tokio::select! {
-        result = server => {
-            result.context("callback server error")?;
-            anyhow::bail!("callback server exited unexpectedly");
-        }
-        code = rx => {
-            code.context("failed to receive authorization code")?
-        }
-    };
-
-    println!("Received authorization code. Exchanging for tokens...");
-
-    // Step 6: Exchange code for tokens
-    let http = reqwest::Client::new();
-    let token_body = format!(
-        "grant_type=authorization_code&code={}&client_id={}&client_secret={}&redirect_uri={}",
-        urlencoding(&code),
-        urlencoding(&client_id),
-        urlencoding(&client_secret),
-        urlencoding(&redirect_uri),
-    );
-
-    let resp = http
-        .post("https://oauth2.googleapis.com/token")
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(token_body)
-        .send()
-        .await
-        .context("failed to exchange authorization code")?;
-
-    let status = resp.status();
-    if !status.is_success() {
-        let text = resp.text().await.unwrap_or_default();
-        anyhow::bail!("Token exchange failed with status {status}: {text}");
-    }
-
-    let token_resp: OAuthTokenResponse = resp.json().await.context("failed to parse token response")?;
-
-    let refresh_token = token_resp
-        .refresh_token
-        .context("No refresh_token in response. Try revoking access at https://myaccount.google.com/permissions and re-running setup.")?;
-
-    // Step 7: Generate random openclaw_hook_token
-    use rand::Rng;
-    let mut rng = rand::rng();
-    let hook_token_bytes: [u8; 32] = rng.random();
-    let hook_token: String = hook_token_bytes
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-
-    // Step 8: Write secrets.toml
-    let secrets_path = config_dir.join("secrets.toml");
-    let secrets_content = format!(
-        "refresh_token = \"{refresh_token}\"\nopenclaw_hook_token = \"{hook_token}\"\n"
-    );
-    std::fs::write(&secrets_path, &secrets_content)
-        .with_context(|| format!("failed to write {}", secrets_path.display()))?;
-
-    // Set permissions to 0600
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&secrets_path, std::fs::Permissions::from_mode(0o600))?;
-    }
-    println!("Wrote {}", secrets_path.display());
-
-    // Step 9: Chown secrets to service user
-    {
-        let chown_result = std::process::Command::new("sudo")
-            .args([
-                "chown",
-                &format!("{service_user}:{service_user}"),
-                &secrets_path.display().to_string(),
-            ])
-            .status();
-
-        match chown_result {
-            Ok(s) if s.success() => {
-                println!("Set ownership of secrets.toml to {service_user}");
-            }
-            _ => {
-                eprintln!("Could not chown secrets.toml. Run manually:");
-                eprintln!("  sudo chown {service_user}:{service_user} {}", secrets_path.display());
-                eprintln!("  chmod 0600 {}", secrets_path.display());
-            }
-        }
-    }
 
     // Step 10: Check if OpenClaw skill is installed, warn if not
     let gateway_token = std::env::var("OPENCLAW_GATEWAY_TOKEN")

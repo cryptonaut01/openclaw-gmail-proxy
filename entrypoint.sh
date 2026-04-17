@@ -30,9 +30,9 @@ fi
 
 # 2. Start service (systemd or fallback)
 #if command -v systemctl &>/dev/null; then
-    echo "Enabling and starting gmail-proxy via systemd..."
-    systemctl enable --now gmail-proxy
-    systemctl status gmail-proxy
+#    echo "Enabling and starting gmail-proxy via systemd..."
+#    systemctl enable --now gmail-proxy
+#    systemctl status gmail-proxy
 #else
 echo "Starting gmail-proxy in foreground (no systemd)..."
 exec /app/gmail-proxy serve --config /etc/gmail-proxy/config.toml

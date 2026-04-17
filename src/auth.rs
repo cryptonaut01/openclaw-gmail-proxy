@@ -424,7 +424,7 @@ pub async fn run_oauth_setup(
     .unwrap_or_else(|_| "".to_string());
     let client = reqwest::blocking::Client::new();
     let res = client
-        .get("http://openclaw/api/skills")
+        .get("http://openclaw:18789/api/skills")
         .bearer_auth(gateway_token)
         .send();
 
